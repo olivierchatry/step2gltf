@@ -1,9 +1,9 @@
 # step2gltf
-Example program of how to convert ISO 10303 STEP files (AP203 and AP 214) to GLTF 2.0 using OpenCascade.
+Example program of how to convert ISO 10303 STEP files (AP203 and AP 214) to GLTF 2.0, OBJ and STL using OpenCascade .
 
 ## Dependencies
 
-You need OpenCascade 7.4.1.dev with RapidJSON.
+You need OpenCascade 7.9.3-dev with RapidJSON.
 
 ## Compiling
 
@@ -77,9 +77,11 @@ just use it as:
 step2gltf STEPFILENAME GLTFFILENAME
 ```
 
-File extension defines glTF 2.0 variant:
+File extension defines variant:
  - ".gltf" - glTF with base64 binary resourses embedded in JSON.
  - ".glb"  - binary glTF.
+ - ".obj" - OBJ file.
+ - ".stl"  - STL file.
 
 You may also need to specify LD_LIBRARY_PATH to run on Astra Linux
 ```
