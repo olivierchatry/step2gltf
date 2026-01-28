@@ -1,7 +1,28 @@
 STATIC ?= 0
 
 UNAME := $(shell uname -a)
-OCCTINCLUDE := $(shell if test -d /usr/local/include/opencascade; then echo "/usr/local/include/opencascade"; else echo ""; fi)
+
+# Check for Homebrew
+BREW_PREFIX := $(shell command -v brew > /dev/null 2>&1 && brew --prefix)
+
+OCCTINCLUDE := 
+OCCLIBPATH :=
+
+# 1. Try Homebrew
+ifneq "$(BREW_PREFIX)" ""
+    ifneq "$(wildcard $(BREW_PREFIX)/include/opencascade)" ""
+        OCCTINCLUDE := $(BREW_PREFIX)/include/opencascade
+        OCCLIBPATH := $(BREW_PREFIX)/lib
+    endif
+endif
+
+# 2. Try /usr/local
+ifeq "$(OCCTINCLUDE)" ""
+    ifneq "$(wildcard /usr/local/include/opencascade)" ""
+        OCCTINCLUDE := /usr/local/include/opencascade
+        OCCLIBPATH := /usr/local/lib
+    endif
+endif
 
 ifneq ($(STATIC),1)
 OCCLIBS= \
@@ -9,7 +30,8 @@ OCCLIBS= \
 -lTKBRep -lTKG2d -lTKG3d -lTKGeomBase \
 -lTKMath -lTKMesh -lTKXSBase -lTKernel -lTKLCAF
 else
-OCCLIBS = $(wildcard /usr/local/lib/libTK*.a)
+LIB_SEARCH_PATH := $(if $(OCCLIBPATH),$(OCCLIBPATH),/usr/local/lib)
+OCCLIBS = $(wildcard $(LIB_SEARCH_PATH)/libTK*.a)
 endif
 
 ifeq "$(OCCTINCLUDE)" ""
@@ -17,13 +39,24 @@ ifeq "$(OCCTINCLUDE)" ""
 OPENCASCADEINC ?= /usr/include/opencascade
 OPENCASCADELIB ?= /usr/lib/opencas
 
-$(info Using OPENCASCADEINC as "${OPENCASCADEINC}")
-$(info Using OPENCASCADELIB as "${OPENCASCADELIB}")
+$(info Using default OPENCASCADEINC as "${OPENCASCADEINC}")
+$(info Using default OPENCASCADELIB as "${OPENCASCADELIB}")
 
 CXXFLAGS += -I$(OPENCASCADEINC)
 LDFLAGS += -L$(OPENCASCADELIB) -L/usr/lib ${OCCLIBS}
 
 else
+
+$(info Using detected OCCTINCLUDE: "${OCCTINCLUDE}")
+$(info Using detected OCCLIBPATH: "${OCCLIBPATH}")
+
+CXXFLAGS += -I$(OCCTINCLUDE)
+LDFLAGS += -L$(OCCLIBPATH)
+
+ifneq "$(BREW_PREFIX)" ""
+    CXXFLAGS += -I$(BREW_PREFIX)/include
+    LDFLAGS += -L$(BREW_PREFIX)/lib
+endif
 
 CXXFLAGS += -I/usr/local/include/opencascade -I/usr/include
 LDFLAGS += -L/usr/local/lib -L/usr/lib
