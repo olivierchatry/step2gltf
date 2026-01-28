@@ -165,27 +165,30 @@ static int step2stl(char *in, char *out) {
               << g_theAngDeflection << ") ..." << std::endl;
   }
 
-  XSControl_Reader reader = stepReader.Reader();
+  TopoDS_Compound aComp;
+  BRep_Builder aBuilder;
+  aBuilder.MakeCompound(aComp);
 
-  Message_ProgressScope aMeshScope(aRootScope.Next(20), "Meshing",
-                                   reader.NbShapes());
-
-  for (int shape_id = 1; shape_id <= reader.NbShapes(); shape_id++) {
-    if (!aMeshScope.More()) {
-      break;
+  // Collect all shapes from the XCAF Document (Leaf nodes)
+  XCAFPrs_DocumentExplorer anExp(doc,
+                                 XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes);
+  for (; anExp.More(); anExp.Next()) {
+    const XCAFPrs_DocumentNode &aNode = anExp.Current();
+    TopoDS_Shape aShape;
+    if (XCAFDoc_ShapeTool::GetShape(aNode.RefLabel, aShape)) {
+      aShape.Move(aNode.Location);
+      if (!aShape.IsNull()) {
+        aBuilder.Add(aComp, aShape);
+      }
     }
-
-    TopoDS_Shape shape = reader.Shape(shape_id);
-
-    if (shape.IsNull()) {
-      aMeshScope.Next();
-      continue;
-    }
-
-    BRepMesh_IncrementalMesh Mesh(shape, g_theLinDeflection, Standard_False,
-                                  g_theAngDeflection, Standard_True);
-    Mesh.Perform(aMeshScope.Next());
   }
+
+  // Perform Meshing on the whole compound in Parallel
+  // BRepMesh_IncrementalMesh(shape, linDeflection, isRelative, angDeflection,
+  // inParallel)
+  BRepMesh_IncrementalMesh Mesh(aComp, g_theLinDeflection, Standard_True,
+                                g_theAngDeflection, Standard_True);
+  Mesh.Perform(aRootScope.Next(20));
 
   TColStd_IndexedDataMapOfStringString theFileInfo;
 
@@ -206,24 +209,6 @@ static int step2stl(char *in, char *out) {
       return 1;
     }
   } else if (format == Format_STL) {
-    // Collect all shapes into a single compound
-    TopoDS_Compound aComp;
-    BRep_Builder aBuilder;
-    aBuilder.MakeCompound(aComp);
-
-    XCAFPrs_DocumentExplorer anExp(doc,
-                                   XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes);
-    for (; anExp.More(); anExp.Next()) {
-      const XCAFPrs_DocumentNode &aNode = anExp.Current();
-      TopoDS_Shape aShape;
-      if (XCAFDoc_ShapeTool::GetShape(aNode.RefLabel, aShape)) {
-        aShape.Move(aNode.Location);
-        if (!aShape.IsNull()) {
-          aBuilder.Add(aComp, aShape);
-        }
-      }
-    }
-
     StlAPI_Writer stlWriter;
     stlWriter.Write(aComp, out);
     // StlAPI_Writer is usually fast and synchronous, so we just advance
