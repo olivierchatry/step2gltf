@@ -5,10 +5,9 @@ OCCTINCLUDE := $(shell if test -d /usr/local/include/opencascade; then echo "/us
 
 ifneq ($(STATIC),1)
 OCCLIBS= \
--lTKXCAF -lTKXDESTEP -lTKCDF -lTKRWMesh \
+-lTKXCAF -lTKDESTEP -lTKCDF -lTKDEGLTF -lTKDESTL -lTKDEOBJ \
 -lTKBRep -lTKG2d -lTKG3d -lTKGeomBase \
--lTKMath -lTKMesh -lTKSTEP -lTKSTEP209 \
--lTKSTEPAttr -lTKSTEPBase -lTKSTL -lTKXSBase -lTKernel
+-lTKMath -lTKMesh -lTKXSBase -lTKernel -lTKLCAF
 else
 OCCLIBS = $(wildcard /usr/local/lib/libTK*.a)
 endif

@@ -31,3 +31,9 @@
 *.out
 *.app
 step2gltf
+*.glb
+*.mtl
+*.obj
+*.stl
+*.gltf
+*.bin

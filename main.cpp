@@ -2,8 +2,21 @@
 #include <XCAFApp_Application.hxx>
 #include <TDocStd_Document.hxx>
 #include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
+#include <iomanip>
+#include <mutex>
 // STEP Read methods
 #include <STEPCAFControl_Reader.hxx>
+// STL Write methods
+#include <StlAPI_Writer.hxx>
+// OBJ Write methods
+#include <RWObj_CafWriter.hxx>
+// Shape tools
+#include <TopoDS_Compound.hxx>
+#include <BRep_Builder.hxx>
+#include <XCAFPrs_DocumentExplorer.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
 // Meshing
 #include <TopoDS_Shape.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
@@ -40,27 +53,38 @@ static const char* kVerbose             = "-v";
 
 /// @name Error messages
 /// @{
-static const char* errorInvalidOutExtension = "output filename shall have .glTF or .glb extension.";
+static const char* errorInvalidOutExtension = "output filename shall have .glTF, .glb, .stl or .obj extension.";
 /// @}
 
 /// Prints progress to stdout
 class ProgressIndicator : public Message_ProgressIndicator
 {
 public:
-    Standard_Boolean Show(const Standard_Boolean /*force*/) override
+    virtual void Show(const Message_ProgressScope& /*theScope*/, const Standard_Boolean /*force*/) override
     {
+        std::lock_guard<std::mutex> lock(m_mutex);
         const Standard_Real pc = this->GetPosition(); // Always within [0,1]
-        const int val = static_cast<int>(1 + pc * (100 - 1));
-        if (val > m_val) {
-            std::cout << '\r' << val;
-            if (val < 100)
-                std::cout << "-";
-            else
-                std::cout << "%" << std::endl;
-            std::cout.flush();
-            m_val = val;
+        
+        int percent = static_cast<int>(pc * 100.0);
+        if (percent == m_val) return; // Reduce flicker
+        m_val = percent;
+
+        // [====================>              ] 50%
+        const int width = 40;
+        int filled = static_cast<int>(pc * width);
+        if (filled > width) filled = width;
+
+        std::cout << "\r[";
+        for (int i = 0; i < width; ++i) {
+            if (i < filled) std::cout << "=";
+            else if (i == filled) std::cout << ">";
+            else std::cout << " ";
         }
-        return Standard_True;
+        std::cout << "] " << std::setw(3) << percent << "% " << std::flush;
+
+        if (percent >= 100) {
+            std::cout << std::endl;
+        }
     }
 
     Standard_Boolean UserBreak() override
@@ -69,13 +93,21 @@ public:
     }
 
 private:
-    int m_val = 0;
+    int m_val = -1;
+    std::mutex m_mutex;
 };
 
 /// Transcode STEP to glTF
 static int step2stl(char *in, char *out)
 {
-    Standard_Boolean gltfIsBinary = Standard_False;
+    enum OutputFormat {
+        Format_GLTF,
+        Format_GLB,
+        Format_STL,
+        Format_OBJ
+    };
+    
+    OutputFormat format = Format_GLTF;
 
     // glTF format depends on output file extension
     const char* out_ext = strrchr(out, '.');
@@ -83,9 +115,13 @@ static int step2stl(char *in, char *out)
         std::cerr << "Error: " << errorInvalidOutExtension << std::endl;
         return 1;
     } else if (strcasecmp(out_ext, ".gltf") == 0) {
-        gltfIsBinary = Standard_False;
+        format = Format_GLTF;
     } else if (strcasecmp(out_ext, ".glb") == 0) {
-        gltfIsBinary = Standard_True;
+        format = Format_GLB;
+    } else if (strcasecmp(out_ext, ".stl") == 0) {
+        format = Format_STL;
+    } else if (strcasecmp(out_ext, ".obj") == 0) {
+        format = Format_OBJ;
     } else {
         std::cerr << "Error: " << errorInvalidOutExtension << std::endl;
         return 1;
@@ -95,6 +131,9 @@ static int step2stl(char *in, char *out)
     Handle(TDocStd_Document) doc;
     Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
     app->NewDocument("MDTV-XCAF", doc);
+
+    Handle(ProgressIndicator) aProgress = new ProgressIndicator();
+    Message_ProgressScope aRootScope(aProgress->Start(), "Step2Gltf", 100);
 
     if (g_verbose_level >= 1) {
         std::cout << "Loading \"" << in << "\" ..." << std::endl;
@@ -116,7 +155,7 @@ static int step2stl(char *in, char *out)
     }
 
     // Transferring to XCAF
-    if (!stepReader.Transfer( doc )) {
+    if (!stepReader.Transfer( doc, aRootScope.Next(30) )) {
         std::cerr << "Error: Failed to read STEP file \"" << in << "\" !" << std::endl;
         doc->Close();
         return 1;
@@ -129,35 +168,68 @@ static int step2stl(char *in, char *out)
 
     XSControl_Reader reader = stepReader.Reader();
 
+    Message_ProgressScope aMeshScope(aRootScope.Next(20), "Meshing", reader.NbShapes());
+
     for(int shape_id = 1; shape_id <= reader.NbShapes(); shape_id++ )
     {
+        if (!aMeshScope.More())
+        {
+             break;
+        }
+
         TopoDS_Shape shape = reader.Shape( shape_id );
 
         if (shape.IsNull()) {
+            aMeshScope.Next();
             continue;
         }
 
         BRepMesh_IncrementalMesh Mesh( shape,
             g_theLinDeflection, Standard_False,
             g_theAngDeflection, Standard_True );
-        Mesh.Perform();
+        Mesh.Perform(aMeshScope.Next());
     }
 
     TColStd_IndexedDataMapOfStringString theFileInfo;
 
     if (g_verbose_level >= 1) {
-        std::cout << "Saving to " << (gltfIsBinary ? "binary " : "") << "glTF ..." << std::endl;
+        std::cout << "Saving to " << out_ext << " ..." << std::endl;
     }
 
-    RWGltf_CafWriter cafWriter(out, gltfIsBinary);
-    // SetTransformationFormat (RWGltf_WriterTrsfFormat theFormat)
-    // https://dev.opencascade.org/doc/refman/html/_r_w_gltf___writer_trsf_format_8hxx.html#a24e114d176d2b2254deac8f1b3e95bf7
+    if (format == Format_GLTF || format == Format_GLB) {
+        RWGltf_CafWriter cafWriter(out, format == Format_GLB);
+        if (!cafWriter.Perform(doc, theFileInfo, aRootScope.Next(50))) {
+             std::cerr << "Error: Failed to write glTF to file !" << std::endl;
+             return 1;
+        }
+    } else if (format == Format_OBJ) {
+        RWObj_CafWriter objWriter(out);
+        if (!objWriter.Perform(doc, theFileInfo, aRootScope.Next(50))) {
+             std::cerr << "Error: Failed to write OBJ to file !" << std::endl;
+             return 1;
+        }
+    } else if (format == Format_STL) {
+        // Collect all shapes into a single compound
+        TopoDS_Compound aComp;
+        BRep_Builder aBuilder;
+        aBuilder.MakeCompound(aComp);
 
-    ProgressIndicator* progress = nullptr;
+        XCAFPrs_DocumentExplorer anExp(doc, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes);
+        for (; anExp.More(); anExp.Next()) {
+            const XCAFPrs_DocumentNode& aNode = anExp.Current();
+            TopoDS_Shape aShape;
+            if (XCAFDoc_ShapeTool::GetShape(aNode.RefLabel, aShape)) {
+                aShape.Move(aNode.Location);
+                if (!aShape.IsNull()) {
+                    aBuilder.Add(aComp, aShape);
+                }
+            }
+        }
 
-    if (!cafWriter.Perform(doc, theFileInfo, progress)) {
-        std::cerr << "Error: Failed to write " << (gltfIsBinary ? "binary " : "") << "glTF to file !" << std::endl;
-        return 1;
+        StlAPI_Writer stlWriter;
+        stlWriter.Write(aComp, out);
+        // StlAPI_Writer is usually fast and synchronous, so we just advance progress
+        aRootScope.Next(50);
     }
 
     return 0;
